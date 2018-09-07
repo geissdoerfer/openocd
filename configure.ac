@@ -301,9 +301,9 @@ AS_CASE(["${host_cpu}"],
       AS_HELP_STRING([--enable-bcm2835gpio], [Enable building support for bitbanging on BCM2835 (as found in Raspberry Pi)]),
       [build_bcm2835gpio=$enableval], [build_bcm2835gpio=no])
 
-    AC_ARG_ENABLE([am3358gpio],
-      AS_HELP_STRING([--enable-am3358gpio], [Enable building support for bitbanging on AM3358 (as found in BeagleBone)]),
-      [build_am3358gpio=$enableval], [build_am3358gpio=no])
+    AC_ARG_ENABLE([am335Xgpio],
+      AS_HELP_STRING([--enable-am335Xgpio], [Enable building support for bitbanging on AM335X (as found in BeagleBone)]),
+      [build_am335Xgpio=$enableval], [build_am335Xgpio=no])
 
     AC_ARG_ENABLE([imx_gpio],
       AS_HELP_STRING([--enable-imx_gpio], [Enable building support for bitbanging on NXP IMX processors]),
@@ -313,7 +313,7 @@ AS_CASE(["${host_cpu}"],
     build_ep93xx=no
     build_at91rm9200=no
     build_bcm2835gpio=no
-    build_am3358gpio=no
+    build_am335Xgpio=no
     build_imx_gpio=no
 ])
 
@@ -528,11 +528,11 @@ AS_IF([test "x$build_bcm2835gpio" = "xyes"], [
   AC_DEFINE([BUILD_BCM2835GPIO], [0], [0 if you don't want bcm2835gpio.])
 ])
 
-AS_IF([test "x$build_am3358gpio" = "xyes"], [
+AS_IF([test "x$build_am335Xgpio" = "xyes"], [
   build_bitbang=yes
-  AC_DEFINE([BUILD_AM3358GPIO], [1], [1 if you want am3358gpio.])
+  AC_DEFINE([BUILD_AM335XGPIO], [1], [1 if you want am335Xgpio.])
 ], [
-  AC_DEFINE([BUILD_AM3358GPIO], [0], [0 if you don't want am3358gpio.])
+  AC_DEFINE([BUILD_AM335XGPIO], [0], [0 if you don't want am335Xgpio.])
 ])
 
 AS_IF([test "x$build_imx_gpio" = "xyes"], [
@@ -715,7 +715,7 @@ AM_CONDITIONAL([ZY1000_MASTER], [test "x$build_zy1000_master" = "xyes"])
 AM_CONDITIONAL([IOUTIL], [test "x$build_ioutil" = "xyes"])
 AM_CONDITIONAL([AT91RM9200], [test "x$build_at91rm9200" = "xyes"])
 AM_CONDITIONAL([BCM2835GPIO], [test "x$build_bcm2835gpio" = "xyes"])
-AM_CONDITIONAL([AM3358GPIO], [test "x$build_am3358gpio" = "xyes"])
+AM_CONDITIONAL([AM335XGPIO], [test "x$build_am335Xgpio" = "xyes"])
 AM_CONDITIONAL([IMX_GPIO], [test "x$build_imx_gpio" = "xyes"])
 AM_CONDITIONAL([BITBANG], [test "x$build_bitbang" = "xyes"])
 AM_CONDITIONAL([JTAG_VPI], [test "x$build_jtag_vpi" = "xyes" -o "x$build_jtag_vpi" = "xyes"])
