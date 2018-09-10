@@ -2,7 +2,7 @@
  *   Copyright (C) 2018                                                    *
  *   by Kai Geissdoerfer, kai.geissdoerfer@tu-dresden.de                   *
  *                                                                         *
- *   Based on bcm2835gpio.c                                                *
+ *   Based on bcm2835gpio.c and imx_gpio                                   *
  *                                                                         *
  *   This program is free software; you can redistribute it and/or modify  *
  *   it under the terms of the GNU General Public License as published by  *
@@ -27,11 +27,11 @@
 
 #include <sys/mman.h>
 
-
+/* Clock manager for enabling clock for GPIO banks */
 #define AM335X_CM_PER_START_ADDR 0x44E00000
 #define AM335X_CM_PER_REGS_SIZE 250
 
-struct am335X_cm_per_regs {
+struct am335x_cm_per_regs {
 	char unused [172];
 	/* One register to control clock of each GPIO1, GPIO2, GPIO3 */
 	uint32_t gpio_clkctrl[3];
@@ -40,6 +40,7 @@ struct am335X_cm_per_regs {
 #define AM335X_GPIO_BANKS_COUNT 4
 #define AM335X_GPIO_REGS_SIZE 2000
 
+/* Each GPIO bank appears as its own peripheral in non-contiguous memory */
 uint32_t gpio_bank_start_addr []= {
 	/* GPIO0 start address */
     0x44e07000,
@@ -51,15 +52,16 @@ uint32_t gpio_bank_start_addr []= {
     0x481AE000
 };
 
-struct am335Xgpio_regs {
+struct am335x_gpio_regs {
 	char unused [308];
+	/* output enable register*/
 	uint32_t oe;
 	uint32_t datain;
 	uint32_t dataout;
 }__attribute__((packed, aligned(4)));
 
-static volatile struct am335Xgpio_regs *gpio_base[4];
-static volatile struct am335X_cm_per_regs *cm_per_base;
+static volatile struct am335x_gpio_regs *gpio_base[4];
+static volatile struct am335x_cm_per_regs *cm_per_base;
 static int fd_mem;
 
 /* GPIO numbers for each signal. Negative values are invalid */
@@ -86,6 +88,10 @@ static int gpio_cm_per_enabled[AM335X_GPIO_BANKS_COUNT];
 enum PIN_MODE {OUTPUT = 0, INPUT = 1};
 enum PIN_VALUE {LOW = 0, HIGH = 1};
 
+/*
+ * Note: GPIO number can be mapped to bank and pin with division/modulo
+ * E.g. GPIO 41 is on GPIO0 (41/32) pin 9 (41%32)
+*/
 static inline void gpio_write(int gpio_num, int value) {
 	if(value)
 		gpio_base[gpio_num / 32]->dataout |= (1U << (gpio_num % 32));
@@ -96,7 +102,7 @@ static inline void gpio_write(int gpio_num, int value) {
 static inline void gpio_mode_set(int gpio_num, int mode) {
 	unsigned int bank = gpio_num / 32;
 	unsigned int idx = gpio_num % 32;
-	gpio_base[bank]->oe = (gpio_base[bank]->oe & ~(1 << idx)) | (mode << idx);
+	gpio_base[bank]->oe = (gpio_base[bank]->oe & ~(1U << idx)) | (mode << idx);
 }
 
 static inline int gpio_mode_get(int gpio_num) {
@@ -108,14 +114,12 @@ static inline int gpio_read(int gpio_num) {
 	return (gpio_base[gpio_num / 32]->datain >> (gpio_num % 32)) & 1U;
 }
 
-
 int setup_mmap_gpio(int gpio_num)
 {
 
 	unsigned int gpio_bank = gpio_num / 32;
 	LOG_DEBUG("Initializing GPIO #%d", gpio_num);
-	if(!gpio_base[gpio_bank])
-	{
+	if(!gpio_base[gpio_bank]) {
 		LOG_DEBUG("Mapping GPIO bank #%u", gpio_bank);
 		gpio_base[gpio_bank] = mmap(0, AM335X_GPIO_REGS_SIZE, PROT_READ | PROT_WRITE,
 			MAP_SHARED, fd_mem, gpio_bank_start_addr[gpio_bank]);
@@ -165,40 +169,39 @@ static int is_gpio_valid(int gpio)
 	return gpio >= 0 && gpio < (32 * AM335X_GPIO_BANKS_COUNT);
 }
 
-static bb_value_t am335Xgpio_read(void);
-static int am335Xgpio_write(int tck, int tms, int tdi);
-static int am335Xgpio_reset(int trst, int srst);
+static bb_value_t am335x_gpio_read(void);
+static int am335x_gpio_write(int tck, int tms, int tdi);
+static int am335x_gpio_reset(int trst, int srst);
 
-static int am335Xgpio_swdio_read(void);
-static void am335Xgpio_swdio_drive(bool is_output);
+static int am335x_gpio_swdio_read(void);
+static void am335x_gpio_swdio_drive(bool is_output);
 
-static int am335Xgpio_init(void);
-static int am335Xgpio_quit(void);
+static int am335x_gpio_init(void);
+static int am335x_gpio_quit(void);
 
-static struct bitbang_interface am335Xgpio_bitbang = {
-	.read = am335Xgpio_read,
-	.write = am335Xgpio_write,
-	.reset = am335Xgpio_reset,
-	.swdio_read = am335Xgpio_swdio_read,
-	.swdio_drive = am335Xgpio_swdio_drive,
+static struct bitbang_interface am335x_gpio_bitbang = {
+	.read = am335x_gpio_read,
+	.write = am335x_gpio_write,
+	.reset = am335x_gpio_reset,
+	.swdio_read = am335x_gpio_swdio_read,
+	.swdio_drive = am335x_gpio_swdio_drive,
 	.blink = NULL
 };
 
-/* Transition delay coefficients. Tuned for IMX6UL 528MHz. Adjusted
- * experimentally for:10kHz, 100Khz, 500KHz. Speeds above 800Khz are impossible
- * to reach via memory mapped method (at least for IMX6UL@528MHz).
- * Measured mmap raw GPIO toggling speed on AM335X@1GHz: 1.4MHz.
+/* Transition delay coefficients. Tuned for AM335X 1GHz. Adjusted
+ * experimentally for:10kHz, 100Khz, 500KHz. Measured mmap raw GPIO toggling
+ * speed on AM335X@1GHz: 1.4MHz.
  */
-static int speed_coeff = 50000;
-static int speed_offset = 100;
+static int speed_coeff = 230000;
+static int speed_offset = 320;
 static unsigned int jtag_delay;
 
-static bb_value_t am335Xgpio_read(void)
+static bb_value_t am335x_gpio_read(void)
 {
 	return gpio_read(tdo_gpio) ? BB_HIGH : BB_LOW;
 }
 
-static int am335Xgpio_write(int tck, int tms, int tdi)
+static int am335x_gpio_write(int tck, int tms, int tdi)
 {
 	gpio_write(tms_gpio, tms);
 	gpio_write(tdi_gpio, tdi);
@@ -210,7 +213,7 @@ static int am335Xgpio_write(int tck, int tms, int tdi)
 	return ERROR_OK;
 }
 
-static int am335Xgpio_swd_write(int tck, int tms, int tdi)
+static int am335x_gpio_swd_write(int tck, int tms, int tdi)
 {
 	gpio_write(swdio_gpio, tdi);
 	gpio_write(swclk_gpio, tck);
@@ -222,7 +225,7 @@ static int am335Xgpio_swd_write(int tck, int tms, int tdi)
 }
 
 /* (1) assert or (0) deassert reset lines */
-static int am335Xgpio_reset(int trst, int srst)
+static int am335x_gpio_reset(int trst, int srst)
 {
 	if (trst_gpio != -1)
 		gpio_write(trst_gpio, trst);
@@ -233,17 +236,17 @@ static int am335Xgpio_reset(int trst, int srst)
 	return ERROR_OK;
 }
 
-static void am335Xgpio_swdio_drive(bool is_output)
+static void am335x_gpio_swdio_drive(bool is_output)
 {
 	gpio_mode_set(swdio_gpio, is_output ? OUTPUT : INPUT);
 }
 
-static int am335Xgpio_swdio_read(void)
+static int am335x_gpio_swdio_read(void)
 {
 	return gpio_read(swdio_gpio);
 }
 
-static int am335Xgpio_khz(int khz, int *jtag_speed)
+static int am335x_gpio_khz(int khz, int *jtag_speed)
 {
 	if (!khz) {
 		LOG_DEBUG("RCLK not supported");
@@ -255,20 +258,20 @@ static int am335Xgpio_khz(int khz, int *jtag_speed)
 	return ERROR_OK;
 }
 
-static int am335Xgpio_speed_div(int speed, int *khz)
+static int am335x_gpio_speed_div(int speed, int *khz)
 {
 	*khz = speed_coeff/(speed + speed_offset);
 	return ERROR_OK;
 }
 
-static int am335Xgpio_speed(int speed)
+static int am335x_gpio_speed(int speed)
 {
 	jtag_delay = speed;
 	return ERROR_OK;
 }
 
 
-COMMAND_HANDLER(am335Xgpio_handle_jtag_gpionums)
+COMMAND_HANDLER(am335x_gpio_handle_jtag_gpionums)
 {
 	if (CMD_ARGC == 4) {
 		COMMAND_PARSE_NUMBER(int, CMD_ARGV[0], tck_gpio);
@@ -280,67 +283,67 @@ COMMAND_HANDLER(am335Xgpio_handle_jtag_gpionums)
 	}
 
 	command_print(CMD_CTX,
-			"am335Xgpio GPIO config: tck = %d, tms = %d, tdi = %d, tdo = %d",
+			"am335x_gpio GPIO config: tck = %d, tms = %d, tdi = %d, tdo = %d",
 			tck_gpio, tms_gpio, tdi_gpio, tdo_gpio);
 
 	return ERROR_OK;
 }
 
-COMMAND_HANDLER(am335Xgpio_handle_jtag_gpionum_tck)
+COMMAND_HANDLER(am335x_gpio_handle_jtag_gpionum_tck)
 {
 	if (CMD_ARGC == 1)
 		COMMAND_PARSE_NUMBER(int, CMD_ARGV[0], tck_gpio);
 
-	command_print(CMD_CTX, "am335Xgpio GPIO config: tck = %d", tck_gpio);
+	command_print(CMD_CTX, "am335x_gpio GPIO config: tck = %d", tck_gpio);
 	return ERROR_OK;
 }
 
-COMMAND_HANDLER(am335Xgpio_handle_jtag_gpionum_tms)
+COMMAND_HANDLER(am335x_gpio_handle_jtag_gpionum_tms)
 {
 	if (CMD_ARGC == 1)
 		COMMAND_PARSE_NUMBER(int, CMD_ARGV[0], tms_gpio);
 
-	command_print(CMD_CTX, "am335Xgpio GPIO config: tms = %d", tms_gpio);
+	command_print(CMD_CTX, "am335x_gpio GPIO config: tms = %d", tms_gpio);
 	return ERROR_OK;
 }
 
-COMMAND_HANDLER(am335Xgpio_handle_jtag_gpionum_tdo)
+COMMAND_HANDLER(am335x_gpio_handle_jtag_gpionum_tdo)
 {
 	if (CMD_ARGC == 1)
 		COMMAND_PARSE_NUMBER(int, CMD_ARGV[0], tdo_gpio);
 
-	command_print(CMD_CTX, "am335Xgpio GPIO config: tdo = %d", tdo_gpio);
+	command_print(CMD_CTX, "am335x_gpio GPIO config: tdo = %d", tdo_gpio);
 	return ERROR_OK;
 }
 
-COMMAND_HANDLER(am335Xgpio_handle_jtag_gpionum_tdi)
+COMMAND_HANDLER(am335x_gpio_handle_jtag_gpionum_tdi)
 {
 	if (CMD_ARGC == 1)
 		COMMAND_PARSE_NUMBER(int, CMD_ARGV[0], tdi_gpio);
 
-	command_print(CMD_CTX, "am335Xgpio GPIO config: tdi = %d", tdi_gpio);
+	command_print(CMD_CTX, "am335x_gpio GPIO config: tdi = %d", tdi_gpio);
 	return ERROR_OK;
 }
 
-COMMAND_HANDLER(am335Xgpio_handle_jtag_gpionum_srst)
+COMMAND_HANDLER(am335x_gpio_handle_jtag_gpionum_srst)
 {
 	if (CMD_ARGC == 1)
 		COMMAND_PARSE_NUMBER(int, CMD_ARGV[0], srst_gpio);
 
-	command_print(CMD_CTX, "am335Xgpio GPIO config: srst = %d", srst_gpio);
+	command_print(CMD_CTX, "am335x_gpio GPIO config: srst = %d", srst_gpio);
 	return ERROR_OK;
 }
 
-COMMAND_HANDLER(am335Xgpio_handle_jtag_gpionum_trst)
+COMMAND_HANDLER(am335x_gpio_handle_jtag_gpionum_trst)
 {
 	if (CMD_ARGC == 1)
 		COMMAND_PARSE_NUMBER(int, CMD_ARGV[0], trst_gpio);
 
-	command_print(CMD_CTX, "am335Xgpio GPIO config: trst = %d", trst_gpio);
+	command_print(CMD_CTX, "am335x_gpio GPIO config: trst = %d", trst_gpio);
 	return ERROR_OK;
 }
 
-COMMAND_HANDLER(am335Xgpio_handle_swd_gpionums)
+COMMAND_HANDLER(am335x_gpio_handle_swd_gpionums)
 {
 	if (CMD_ARGC == 2) {
 		COMMAND_PARSE_NUMBER(int, CMD_ARGV[0], swclk_gpio);
@@ -350,31 +353,31 @@ COMMAND_HANDLER(am335Xgpio_handle_swd_gpionums)
 	}
 
 	command_print(CMD_CTX,
-			"am335Xgpio GPIO nums: swclk = %d, swdio = %d",
+			"am335x_gpio GPIO nums: swclk = %d, swdio = %d",
 			swclk_gpio, swdio_gpio);
 
 	return ERROR_OK;
 }
 
-COMMAND_HANDLER(am335Xgpio_handle_swd_gpionum_swclk)
+COMMAND_HANDLER(am335x_gpio_handle_swd_gpionum_swclk)
 {
 	if (CMD_ARGC == 1)
 		COMMAND_PARSE_NUMBER(int, CMD_ARGV[0], swclk_gpio);
 
-	command_print(CMD_CTX, "am335Xgpio num: swclk = %d", swclk_gpio);
+	command_print(CMD_CTX, "am335x_gpio num: swclk = %d", swclk_gpio);
 	return ERROR_OK;
 }
 
-COMMAND_HANDLER(am335Xgpio_handle_swd_gpionum_swdio)
+COMMAND_HANDLER(am335x_gpio_handle_swd_gpionum_swdio)
 {
 	if (CMD_ARGC == 1)
 		COMMAND_PARSE_NUMBER(int, CMD_ARGV[0], swdio_gpio);
 
-	command_print(CMD_CTX, "am335Xgpio num: swdio = %d", swdio_gpio);
+	command_print(CMD_CTX, "am335x_gpio num: swdio = %d", swdio_gpio);
 	return ERROR_OK;
 }
 
-COMMAND_HANDLER(am335Xgpio_handle_speed_coeffs)
+COMMAND_HANDLER(am335x_gpio_handle_speed_coeffs)
 {
 	if (CMD_ARGC == 2) {
 		COMMAND_PARSE_NUMBER(int, CMD_ARGV[0], speed_coeff);
@@ -383,72 +386,72 @@ COMMAND_HANDLER(am335Xgpio_handle_speed_coeffs)
 	return ERROR_OK;
 }
 
-static const struct command_registration am335Xgpio_command_handlers[] = {
+static const struct command_registration am335x_gpio_command_handlers[] = {
 	{
-		.name = "am335Xgpio_jtag_nums",
-		.handler = &am335Xgpio_handle_jtag_gpionums,
+		.name = "am335x_gpio_jtag_nums",
+		.handler = &am335x_gpio_handle_jtag_gpionums,
 		.mode = COMMAND_CONFIG,
 		.help = "gpio numbers for tck, tms, tdi, tdo. (in that order)",
 		.usage = "(tck tms tdi tdo)* ",
 	},
 	{
-		.name = "am335Xgpio_tck_num",
-		.handler = &am335Xgpio_handle_jtag_gpionum_tck,
+		.name = "am335x_gpio_tck_num",
+		.handler = &am335x_gpio_handle_jtag_gpionum_tck,
 		.mode = COMMAND_CONFIG,
 		.help = "gpio number for tck.",
 	},
 	{
-		.name = "am335Xgpio_tms_num",
-		.handler = &am335Xgpio_handle_jtag_gpionum_tms,
+		.name = "am335x_gpio_tms_num",
+		.handler = &am335x_gpio_handle_jtag_gpionum_tms,
 		.mode = COMMAND_CONFIG,
 		.help = "gpio number for tms.",
 	},
 	{
-		.name = "am335Xgpio_tdo_num",
-		.handler = &am335Xgpio_handle_jtag_gpionum_tdo,
+		.name = "am335x_gpio_tdo_num",
+		.handler = &am335x_gpio_handle_jtag_gpionum_tdo,
 		.mode = COMMAND_CONFIG,
 		.help = "gpio number for tdo.",
 	},
 	{
-		.name = "am335Xgpio_tdi_num",
-		.handler = &am335Xgpio_handle_jtag_gpionum_tdi,
+		.name = "am335x_gpio_tdi_num",
+		.handler = &am335x_gpio_handle_jtag_gpionum_tdi,
 		.mode = COMMAND_CONFIG,
 		.help = "gpio number for tdi.",
 	},
 	{
-		.name = "am335Xgpio_swd_nums",
-		.handler = &am335Xgpio_handle_swd_gpionums,
+		.name = "am335x_gpio_swd_nums",
+		.handler = &am335x_gpio_handle_swd_gpionums,
 		.mode = COMMAND_CONFIG,
 		.help = "gpio numbers for swclk, swdio. (in that order)",
 		.usage = "(swclk swdio)* ",
 	},
 	{
-		.name = "am335Xgpio_swclk_num",
-		.handler = &am335Xgpio_handle_swd_gpionum_swclk,
+		.name = "am335x_gpio_swclk_num",
+		.handler = &am335x_gpio_handle_swd_gpionum_swclk,
 		.mode = COMMAND_CONFIG,
 		.help = "gpio number for swclk.",
 	},
 	{
-		.name = "am335Xgpio_swdio_num",
-		.handler = &am335Xgpio_handle_swd_gpionum_swdio,
+		.name = "am335x_gpio_swdio_num",
+		.handler = &am335x_gpio_handle_swd_gpionum_swdio,
 		.mode = COMMAND_CONFIG,
 		.help = "gpio number for swdio.",
 	},
 	{
-		.name = "am335Xgpio_srst_num",
-		.handler = &am335Xgpio_handle_jtag_gpionum_srst,
+		.name = "am335x_gpio_srst_num",
+		.handler = &am335x_gpio_handle_jtag_gpionum_srst,
 		.mode = COMMAND_CONFIG,
 		.help = "gpio number for srst.",
 	},
 	{
-		.name = "am335Xgpio_trst_num",
-		.handler = &am335Xgpio_handle_jtag_gpionum_trst,
+		.name = "am335x_gpio_trst_num",
+		.handler = &am335x_gpio_handle_jtag_gpionum_trst,
 		.mode = COMMAND_CONFIG,
 		.help = "gpio number for trst.",
 	},
 	{
-		.name = "am335Xgpio_speed_coeffs",
-		.handler = &am335Xgpio_handle_speed_coeffs,
+		.name = "am335x_gpio_speed_coeffs",
+		.handler = &am335x_gpio_handle_speed_coeffs,
 		.mode = COMMAND_CONFIG,
 		.help = "SPEED_COEFF and SPEED_OFFSET for delay calculations.",
 	},
@@ -456,23 +459,23 @@ static const struct command_registration am335Xgpio_command_handlers[] = {
 	COMMAND_REGISTRATION_DONE
 };
 
-static const char * const am335Xgpio_transports[] = { "jtag", "swd", NULL };
+static const char * const am335x_gpio_transports[] = { "jtag", "swd", NULL };
 
-struct jtag_interface am335Xgpio_interface = {
-	.name = "am335Xgpio",
+struct jtag_interface am335x_gpio_interface = {
+	.name = "am335x_gpio",
 	.supported = DEBUG_CAP_TMS_SEQ,
 	.execute_queue = bitbang_execute_queue,
-	.transports = am335Xgpio_transports,
+	.transports = am335x_gpio_transports,
 	.swd = &bitbang_swd,
-	.speed = am335Xgpio_speed,
-	.khz = am335Xgpio_khz,
-	.speed_div = am335Xgpio_speed_div,
-	.commands = am335Xgpio_command_handlers,
-	.init = am335Xgpio_init,
-	.quit = am335Xgpio_quit,
+	.speed = am335x_gpio_speed,
+	.khz = am335x_gpio_khz,
+	.speed_div = am335x_gpio_speed_div,
+	.commands = am335x_gpio_command_handlers,
+	.init = am335x_gpio_init,
+	.quit = am335x_gpio_quit,
 };
 
-static bool am335Xgpio_jtag_mode_possible(void)
+static bool am335x_gpio_jtag_mode_possible(void)
 {
 	if (!is_gpio_valid(tck_gpio))
 		return 0;
@@ -485,7 +488,7 @@ static bool am335Xgpio_jtag_mode_possible(void)
 	return 1;
 }
 
-static bool am335Xgpio_swd_mode_possible(void)
+static bool am335x_gpio_swd_mode_possible(void)
 {
 	if (!is_gpio_valid(swclk_gpio))
 		return 0;
@@ -494,18 +497,18 @@ static bool am335Xgpio_swd_mode_possible(void)
 	return 1;
 }
 
-static int am335Xgpio_init(void)
+static int am335x_gpio_init(void)
 {
-	bitbang_interface = &am335Xgpio_bitbang;
+	bitbang_interface = &am335x_gpio_bitbang;
 
-	LOG_INFO("am335Xgpio GPIO JTAG/SWD bitbang driver");
+	LOG_INFO("am335x_gpio GPIO JTAG/SWD bitbang driver");
 
-	if (am335Xgpio_jtag_mode_possible()) {
-		if (am335Xgpio_swd_mode_possible())
+	if (am335x_gpio_jtag_mode_possible()) {
+		if (am335x_gpio_swd_mode_possible())
 			LOG_INFO("JTAG and SWD modes enabled");
 		else
 			LOG_INFO("JTAG only mode enabled (specify swclk and swdio gpio to add SWD mode)");
-	} else if (am335Xgpio_swd_mode_possible()) {
+	} else if (am335x_gpio_swd_mode_possible()) {
 		LOG_INFO("SWD only mode enabled (specify tck, tms, tdi and tdo gpios to add JTAG mode)");
 	} else {
 		LOG_ERROR("Require tck, tms, tdi and tdo gpios for JTAG mode and/or swclk and swdio gpio for SWD mode");
@@ -523,6 +526,7 @@ static int am335Xgpio_init(void)
 		MAP_SHARED, fd_mem, AM335X_CM_PER_START_ADDR);
 	if(cm_per_base == MAP_FAILED) {
 		LOG_ERROR("Failed to mmap Clock Manager registers");
+		close(fd_mem);
 		return ERROR_JTAG_INIT_FAILED;
 	}
 	int ret;
@@ -530,7 +534,7 @@ static int am335Xgpio_init(void)
 	 * Configure TDO as an input, and TDI, TCK, TMS, TRST, SRST
 	 * as outputs.  Drive TDI and TCK low, and TMS/TRST/SRST high.
 	 */
-	if (am335Xgpio_jtag_mode_possible()) {
+	if (am335x_gpio_jtag_mode_possible()) {
 
 		ret = setup_mmap_gpio(tdo_gpio);
 		if(ret!=ERROR_OK)
@@ -562,7 +566,7 @@ static int am335Xgpio_init(void)
 		gpio_write(tms_gpio, HIGH);
 
 	}
-	if (am335Xgpio_swd_mode_possible()) {
+	if (am335x_gpio_swd_mode_possible()) {
 		ret = setup_mmap_gpio(swclk_gpio);
 		if(ret!=ERROR_OK)
 			goto out_error;
@@ -601,7 +605,7 @@ static int am335Xgpio_init(void)
 		  tdi_gpio_mode, tdo_gpio_mode, trst_gpio_mode, srst_gpio_mode);
 
 	if (swd_mode) {
-		am335Xgpio_bitbang.write = am335Xgpio_swd_write;
+		am335x_gpio_bitbang.write = am335x_gpio_swd_write;
 		bitbang_switch_to_swd();
 	}
 
@@ -612,15 +616,15 @@ out_error:
 	return ERROR_JTAG_INIT_FAILED;
 }
 
-static int am335Xgpio_quit(void)
+static int am335x_gpio_quit(void)
 {
-	if (am335Xgpio_jtag_mode_possible()) {
+	if (am335x_gpio_jtag_mode_possible()) {
 		gpio_mode_set(tdo_gpio, tdo_gpio_mode);
 		gpio_mode_set(tdi_gpio, tdi_gpio_mode);
 		gpio_mode_set(tck_gpio, tck_gpio_mode);
 		gpio_mode_set(tms_gpio, tms_gpio_mode);
 	}
-	if (am335Xgpio_swd_mode_possible()) {
+	if (am335x_gpio_swd_mode_possible()) {
 		gpio_mode_set(swclk_gpio, swclk_gpio_mode);
 		gpio_mode_set(swdio_gpio, swdio_gpio_mode);
 	}

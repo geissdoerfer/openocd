@@ -147,8 +147,8 @@ endif
 if BCM2835GPIO
 DRIVERFILES += %D%/bcm2835gpio.c
 endif
-if AM335XGPIO
-DRIVERFILES += %D%/am335Xgpio.c
+if AM335X_GPIO
+DRIVERFILES += %D%/am335x_gpio.c
 endif
 if OPENJTAG
 DRIVERFILES += %D%/openjtag.c
