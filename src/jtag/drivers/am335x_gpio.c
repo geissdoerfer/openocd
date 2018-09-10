@@ -32,10 +32,10 @@
 #define AM335X_CM_PER_REGS_SIZE 250
 
 struct am335x_cm_per_regs {
-	char unused [172];
+	char unused[172];
 	/* One register to control clock of each GPIO1, GPIO2, GPIO3 */
 	uint32_t gpio_clkctrl[3];
-}__attribute__((packed, aligned(4)));
+} __attribute__((packed, aligned(4)));
 
 #define AM335X_GPIO_BANKS_COUNT 4
 #define AM335X_GPIO_REGS_SIZE 2000
@@ -43,22 +43,22 @@ struct am335x_cm_per_regs {
 /* Each GPIO bank appears as its own peripheral in non-contiguous memory */
 uint32_t gpio_bank_start_addr []= {
 	/* GPIO0 start address */
-    0x44e07000,
+	0x44e07000,
 	/* GPIO1 start address */
-    0x4804C000,
+	0x4804C000,
 	/* GPIO2 start address */
-    0x481AC000,
+	0x481AC000,
 	/* GPIO3 start address */
-    0x481AE000
+	0x481AE000
 };
 
 struct am335x_gpio_regs {
-	char unused [308];
+	char unused[308];
 	/* output enable register*/
 	uint32_t oe;
 	uint32_t datain;
 	uint32_t dataout;
-}__attribute__((packed, aligned(4)));
+} __attribute__((packed, aligned(4)));
 
 static volatile struct am335x_gpio_regs *gpio_base[4];
 static volatile struct am335x_cm_per_regs *cm_per_base;
@@ -92,25 +92,29 @@ enum PIN_VALUE {LOW = 0, HIGH = 1};
  * Note: GPIO number can be mapped to bank and pin with division/modulo
  * E.g. GPIO 41 is on GPIO0 (41/32) pin 9 (41%32)
 */
-static inline void gpio_write(int gpio_num, int value) {
-	if(value)
+static inline void gpio_write(int gpio_num, int value)
+{
+	if (value)
 		gpio_base[gpio_num / 32]->dataout |= (1U << (gpio_num % 32));
 	else
 		gpio_base[gpio_num / 32]->dataout &= ~(1U << (gpio_num % 32));
 }
 
-static inline void gpio_mode_set(int gpio_num, int mode) {
+static inline void gpio_mode_set(int gpio_num, int mode)
+{
 	unsigned int bank = gpio_num / 32;
 	unsigned int idx = gpio_num % 32;
 	gpio_base[bank]->oe = (gpio_base[bank]->oe & ~(1U << idx)) | (mode << idx);
 }
 
-static inline int gpio_mode_get(int gpio_num) {
+static inline int gpio_mode_get(int gpio_num)
+{
 
 	return (gpio_base[gpio_num / 32]->oe >> (gpio_num % 32)) & 1U;
 }
 
-static inline int gpio_read(int gpio_num) {
+static inline int gpio_read(int gpio_num)
+{
 	return (gpio_base[gpio_num / 32]->datain >> (gpio_num % 32)) & 1U;
 }
 
@@ -119,15 +123,15 @@ int setup_mmap_gpio(int gpio_num)
 
 	unsigned int gpio_bank = gpio_num / 32;
 	LOG_DEBUG("Initializing GPIO #%d", gpio_num);
-	if(!gpio_base[gpio_bank]) {
+	if (!gpio_base[gpio_bank]) {
 		LOG_DEBUG("Mapping GPIO bank #%u", gpio_bank);
 		gpio_base[gpio_bank] = mmap(0, AM335X_GPIO_REGS_SIZE, PROT_READ | PROT_WRITE,
 			MAP_SHARED, fd_mem, gpio_bank_start_addr[gpio_bank]);
-		if(gpio_base[gpio_bank] == MAP_FAILED)
+		if (gpio_base[gpio_bank] == MAP_FAILED)
 			return -1;
 
 		/* Clock for GPIO1-3 has to be enabled manually */
-		if(gpio_bank != 0) {
+		if (gpio_bank != 0) {
 			LOG_DEBUG("Enabling clock for GPIO bank #%u", gpio_bank);
 			/* Backup state */
 			gpio_cm_per_enabled[gpio_bank] = cm_per_base->gpio_clkctrl[gpio_bank] & (1 << 1);
@@ -142,13 +146,13 @@ int setup_mmap_gpio(int gpio_num)
 static void release_gpio_banks(void)
 {
 	unsigned int gpio_bank;
-	for(gpio_bank=0; gpio_bank<AM335X_GPIO_BANKS_COUNT; gpio_bank++)
+	for (gpio_bank=0; gpio_bank<AM335X_GPIO_BANKS_COUNT; gpio_bank++)
 	{
-		if(gpio_base[gpio_bank]) {
+		if (gpio_base[gpio_bank]) {
 			munmap((void *) gpio_base[gpio_bank], AM335X_GPIO_REGS_SIZE);
 
 			/* Restore clock state for GPIO1-3 */
-			if(gpio_bank != 0) {
+			if (gpio_bank != 0) {
 				uint32_t state = cm_per_base->gpio_clkctrl[gpio_bank] & ~(1 << 1);
 				state |= gpio_cm_per_enabled[gpio_bank];
 				cm_per_base->gpio_clkctrl[gpio_bank] = state;
@@ -524,7 +528,7 @@ static int am335x_gpio_init(void)
 	/* Map Registers for Clock control of GPIO banks */
 	cm_per_base = mmap(0, AM335X_CM_PER_REGS_SIZE, PROT_READ | PROT_WRITE,
 		MAP_SHARED, fd_mem, AM335X_CM_PER_START_ADDR);
-	if(cm_per_base == MAP_FAILED) {
+	if (cm_per_base == MAP_FAILED) {
 		LOG_ERROR("Failed to mmap Clock Manager registers");
 		close(fd_mem);
 		return ERROR_JTAG_INIT_FAILED;
@@ -537,22 +541,22 @@ static int am335x_gpio_init(void)
 	if (am335x_gpio_jtag_mode_possible()) {
 
 		ret = setup_mmap_gpio(tdo_gpio);
-		if(ret!=ERROR_OK)
+		if (ret != ERROR_OK)
 			goto out_error;
 		tdo_gpio_mode = gpio_mode_get(tdo_gpio);
 
 		ret = setup_mmap_gpio(tdi_gpio);
-		if(ret!=ERROR_OK)
+		if (ret != ERROR_OK)
 			goto out_error;
 		tdi_gpio_mode = gpio_mode_get(tdi_gpio);
 
 		ret = setup_mmap_gpio(tck_gpio);
-		if(ret!=ERROR_OK)
+		if (ret != ERROR_OK)
 			goto out_error;
 		tck_gpio_mode = gpio_mode_get(tck_gpio);
 
 		ret = setup_mmap_gpio(tms_gpio);
-		if(ret!=ERROR_OK)
+		if (ret != ERROR_OK)
 			goto out_error;
 		tms_gpio_mode = gpio_mode_get(tms_gpio);
 
@@ -568,12 +572,12 @@ static int am335x_gpio_init(void)
 	}
 	if (am335x_gpio_swd_mode_possible()) {
 		ret = setup_mmap_gpio(swclk_gpio);
-		if(ret!=ERROR_OK)
+		if (ret != ERROR_OK)
 			goto out_error;
 		swclk_gpio_mode = gpio_mode_get(swclk_gpio);
 
 		ret = setup_mmap_gpio(swdio_gpio);
-		if(ret!=ERROR_OK)
+		if (ret != ERROR_OK)
 			goto out_error;
 		swdio_gpio_mode = gpio_mode_get(swdio_gpio);
 
@@ -585,7 +589,7 @@ static int am335x_gpio_init(void)
 	}
 	if (trst_gpio != -1) {
 		ret = setup_mmap_gpio(trst_gpio);
-		if(ret!=ERROR_OK)
+		if (ret != ERROR_OK)
 			goto out_error;
 		trst_gpio_mode = gpio_mode_get(trst_gpio);
 		gpio_mode_set(trst_gpio, OUTPUT);
@@ -593,7 +597,7 @@ static int am335x_gpio_init(void)
 	}
 	if (srst_gpio != -1) {
 		ret = setup_mmap_gpio(srst_gpio);
-		if(ret!=ERROR_OK)
+		if (ret != ERROR_OK)
 			goto out_error;
 		srst_gpio_mode = gpio_mode_get(srst_gpio);
 		gpio_mode_set(srst_gpio, OUTPUT);
