@@ -41,7 +41,7 @@ struct am335x_cm_per_regs {
 #define AM335X_GPIO_REGS_SIZE 2000
 
 /* Each GPIO bank appears as its own peripheral in non-contiguous memory */
-uint32_t gpio_bank_start_addr []= {
+uint32_t gpio_bank_start_addr[] = {
 	/* GPIO0 start address */
 	0x44e07000,
 	/* GPIO1 start address */
@@ -146,8 +146,7 @@ int setup_mmap_gpio(int gpio_num)
 static void release_gpio_banks(void)
 {
 	unsigned int gpio_bank;
-	for (gpio_bank=0; gpio_bank<AM335X_GPIO_BANKS_COUNT; gpio_bank++)
-	{
+	for (gpio_bank = 0; gpio_bank < AM335X_GPIO_BANKS_COUNT; gpio_bank++) {
 		if (gpio_base[gpio_bank]) {
 			munmap((void *) gpio_base[gpio_bank], AM335X_GPIO_REGS_SIZE);
 
