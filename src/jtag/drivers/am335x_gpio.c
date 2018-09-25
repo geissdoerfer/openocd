@@ -132,10 +132,12 @@ int setup_mmap_gpio(int gpio_num)
 
 		/* Clock for GPIO1-3 has to be enabled manually */
 		if (gpio_bank != 0) {
-			LOG_DEBUG("Enabling clock for GPIO bank #%u", gpio_bank);
 			/* Backup state */
-			gpio_cm_per_enabled[gpio_bank] = cm_per_base->gpio_clkctrl[gpio_bank] & (1 << 1);
-			cm_per_base->gpio_clkctrl[gpio_bank] |= (1 << 1);
+			LOG_DEBUG("Saving clock state for GPIO bank #%u", gpio_bank);
+			/* Clock for GPIO1 is configured in gpio_clkctrl[0] */
+			gpio_cm_per_enabled[gpio_bank] = cm_per_base->gpio_clkctrl[gpio_bank - 1] & (1 << 1);
+			LOG_DEBUG("Enabling clock for GPIO bank #%u", gpio_bank);
+			cm_per_base->gpio_clkctrl[gpio_bank - 1] |= (1 << 1);
 		}
 	}
 
@@ -152,9 +154,10 @@ static void release_gpio_banks(void)
 
 			/* Restore clock state for GPIO1-3 */
 			if (gpio_bank != 0) {
-				uint32_t state = cm_per_base->gpio_clkctrl[gpio_bank] & ~(1 << 1);
+				/* Clock for GPIO1 is configured in gpio_clkctrl[0] */
+				uint32_t state = cm_per_base->gpio_clkctrl[gpio_bank - 1] & ~(1 << 1);
 				state |= gpio_cm_per_enabled[gpio_bank];
-				cm_per_base->gpio_clkctrl[gpio_bank] = state;
+				cm_per_base->gpio_clkctrl[gpio_bank - 1] = state;
 			}
 		}
 	}
